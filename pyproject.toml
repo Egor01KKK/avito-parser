@@ -7,6 +7,7 @@ dependencies = [
     "ddddocr @ git+https://github.com/sml2h3/ddddocr.git@main",
     "numpy>=2.2.1",
     "opencv-python-headless>=4.10.0.84",
+    "openpyxl>=3.1.5",
     "pycryptodome>=3.21.0",
     "requests>=2.32.3",
 ]

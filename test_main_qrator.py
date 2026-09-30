@@ -246,9 +246,12 @@ def test_items_url_has_exact_query_and_only_replaces_page() -> None:
     assert parsed.netloc == "www.avito.ru"
     assert parsed.path == "/web/1/js/items"
     assert parse_qsl(parsed.query) == expected
-    assert dict(expected)["categoryId"] == "98"
-    assert dict(expected)["rootCategoryId"] == "6"
-    assert dict(expected)["features[suggestParams][categoryID]"] == "98"
+    assert dict(expected)["categoryId"] == "24"
+    assert dict(expected)["locationId"] == "653240"
+    assert dict(expected)["params[549][0]"] == "5697"
+    assert dict(expected)["params[110472][0]"] == "437131"
+    assert dict(expected)["rootCategoryId"] == "4"
+    assert dict(expected)["features[suggestParams][categoryID]"] == "24"
     assert dict(expected)["features[ivaItemRedesign]"] == "true"
     assert "name" not in dict(expected)
 
@@ -1184,3 +1187,49 @@ def test_intervening_pow_does_not_exhaust_geetest_retry_budget() -> None:
     )
     assert result.verification_chain == ("firewallPow", "GeeTest")
     assert result.pow_unblock_ttl == 420
+
+
+def test_page_loop_stops_after_last_page_and_keeps_listings() -> None:
+    last_page_payload = items_payload(
+        [{"id": 1, "type": "item"}, {"id": 2, "type": "banner"}]
+    )
+    last_page_payload["totalCount"] = 60
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                headers={"content-type": "application/json"},
+                json_value=last_page_payload,
+                url=main.page_url(2),
+            ),
+        ]
+    )
+
+    with patch.object(main.time, "sleep"):
+        results, protection_response = main.request_pages(
+            session, start_page=2
+        )
+
+    assert protection_response is None
+    assert [result.page for result in results] == [2]
+    assert results[0].items == ({"id": 1, "type": "item"},)
+
+
+def test_page_loop_stops_when_caller_asks() -> None:
+    session = FakeSession(
+        [
+            FakeResponse(
+                200,
+                headers={"content-type": "application/json"},
+                json_value=items_payload(),
+                url=main.page_url(1),
+            ),
+        ]
+    )
+
+    with patch.object(main.time, "sleep"):
+        results, _ = main.request_pages(
+            session, stop_after=lambda result: result.page == 1
+        )
+
+    assert [result.page for result in results] == [1]

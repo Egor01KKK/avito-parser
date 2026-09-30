@@ -14,7 +14,7 @@ import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlencode, urljoin, urlsplit
 
 from curl_cffi import requests
@@ -44,25 +44,30 @@ GEETEST_CAPTCHA_ID = "2d9c743cf7d63dbc9db578a608196bcd"
 QRATOR_FT_URL = f"{BASE_URL}/web/2/ft"
 QRATOR_PIXEL_URL = f"{BASE_URL}/web/1/u"
 QRATOR_FAVICON_URL = f"{BASE_URL}/favicon.ico"
+# Search: Saint Petersburg, flats for sale, 2 rooms, "Частные" sellers.
+# The slug and ``f`` value are the canonical catalog URL that Avito itself
+# returns for exactly these filters.
 CATALOG_PAGE_URL = (
-    f"{BASE_URL}/volgograd/bytovaya_elektronika?"
-    "context=H4sIAAAAAAAA_wEmANn_YToxOntzOjE6InkiO3M6MTY6"
-    "ImpKSFd2M2hLSlIzWWJFMHQiO30fldpuJgAAAA"
+    f"{BASE_URL}/sankt-peterburg/kvartiry/prodam/2-komnatnye-ASgBAgICAkSSA8YQygiCWQ"
+    "?f=ASgBAgICA0SSA8YQygiCWZC~DZauNQ"
 )
-REFERER = (
-    f"{BASE_URL}/volgograd/bytovaya_elektronika?"
-    "context=H4sIAAAAAAAA_wEmANn_YToxOntzOjE6InkiO3M6MTY6ImpKSFd2M2hLSlIzWWJFMHQiO30fldpuJgAAAA"
-    "&p=18&q=%D0%BD%D0%BE%D1%83%D1%82%D0%B1%D1%83%D0%BA"
-)
+REFERER = CATALOG_PAGE_URL
 ITEMS_URL = f"{BASE_URL}/web/1/js/items"
+SAINT_PETERSBURG_LOCATION_ID = "653240"
+FLATS_CATEGORY_ID = "24"
 ITEMS_QUERY_PARAMETERS = (
-    ("categoryId", "98"),
-    ("locationId", "624840"),
-    ("geoCoords", "48.707103,44.516939"),
+    ("categoryId", FLATS_CATEGORY_ID),
+    ("locationId", SAINT_PETERSBURG_LOCATION_ID),
     ("cd", "0"),
-    ("p", "7"),
-    ("verticalCategoryId", "4"),
-    ("rootCategoryId", "6"),
+    ("p", "1"),
+    # "Купить" / sale listings.
+    ("params[201]", "1059"),
+    # "Количество комнат": 2 комнаты.
+    ("params[549][0]", "5697"),
+    # "Продавцы": Частные (agencies and developers are excluded by Avito).
+    ("params[110472][0]", "437131"),
+    ("verticalCategoryId", "1"),
+    ("rootCategoryId", "4"),
     ("localPriority", "0"),
     ("updateListOnly", "true"),
     ("features[imageAspectRatio]", "1:1"),
@@ -92,8 +97,8 @@ ITEMS_QUERY_PARAMETERS = (
     ("features[isReNewSortAb]", "false"),
     ("features[isReItemXlAb]", "false"),
     ("features[isSplitAdvertBlock]", "false"),
-    ("features[suggestParams][categoryID]", "98"),
-    ("features[suggestParams][locationID]", "624840"),
+    ("features[suggestParams][categoryID]", FLATS_CATEGORY_ID),
+    ("features[suggestParams][locationID]", SAINT_PETERSBURG_LOCATION_ID),
     ("features[suggestParams][presentationType]", "serp"),
     ("features[isShowWithPhotoFilter]", "false"),
     ("features[reverseVisualRubricator]", "false"),
@@ -105,11 +110,6 @@ ITEMS_QUERY_PARAMETERS = (
     ("features[shouldSendRreLayoutEvents]", "false"),
     ("features[isRedesignZhkSerp]", "false"),
     ("features[isHotelsSnippetRedesign]", "false"),
-    (
-        "context",
-        "H4sIAAAAAAAA_wEmANn_YToxOntzOjE6InkiO3M6MTY6"
-        "ImpYUEV3Zlo2MkpTVE9GRWEiO33DzQ3bJgAAAA",
-    ),
 )
 PAGES_TO_REQUEST = 100
 # This is only a final loop-safety cap. GeeTest has its own stricter limit
@@ -118,7 +118,8 @@ PAGES_TO_REQUEST = 100
 MAX_PROTECTION_TRANSITIONS_PER_PAGE = 25
 MAX_CONSECUTIVE_GEETEST_FAILURES = 5
 MAX_QRATOR_RETRIES_PER_REQUEST = 2
-PAGE_REQUEST_DELAY_SECONDS = 0.05
+# A calm pace between catalog pages; the whole search is only ~20 pages.
+PAGE_REQUEST_DELAY_SECONDS = 2.0
 QRATOR_PRE_FT_DELAY_SECONDS = 1.0
 QRATOR_POST_PIXEL_DELAY_SECONDS = 2.0
 TRANSPORT_RETRY_DELAY_SECONDS = 1.0
@@ -383,6 +384,7 @@ class PageRequestResult:
     status_code: int
     redirect_location: str | None = None
     stats: ItemsPageStats | None = None
+    items: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -441,6 +443,32 @@ def parse_items_page_stats(response: Any) -> ItemsPageStats | None:
         items_on_page=values["itemsOnPage"],
         items_hash=items_hash,
     )
+
+
+def parse_catalog_listings(response: Any) -> tuple[dict[str, Any], ...]:
+    """Return the listing objects (``type == "item"``) of an items response."""
+    if response.status_code != 200:
+        return ()
+    try:
+        payload = response.json()
+    except (json.JSONDecodeError, ValueError):
+        return ()
+    catalog = payload.get("catalog") if isinstance(payload, dict) else None
+    items = catalog.get("items") if isinstance(catalog, dict) else None
+    if not isinstance(items, list):
+        return ()
+    return tuple(
+        item
+        for item in items
+        if isinstance(item, dict) and item.get("type", "item") == "item"
+    )
+
+
+def is_last_catalog_page(page: int, stats: ItemsPageStats) -> bool:
+    """Whether ``page`` already covers every listing Avito reports."""
+    if stats.items_on_page <= 0:
+        return True
+    return page * stats.items_on_page >= stats.total_count
 
 
 def hash_catalog_items(items: list[Any]) -> str:
@@ -1761,8 +1789,13 @@ def request_pages(
     start_page: int = 1,
     verification_chain: list[str] | None = None,
     first_page_diagnostic_context: str | None = None,
+    stop_after: Callable[[PageRequestResult], bool] | None = None,
 ) -> tuple[tuple[PageRequestResult, ...], Any | None]:
-    """Request items pages from ``start_page`` through the configured limit."""
+    """Request items pages from ``start_page`` through the configured limit.
+
+    ``stop_after`` may end the loop early after any successful page, e.g.
+    once a page holds no listings the caller has not seen before.
+    """
     if not 1 <= start_page <= PAGES_TO_REQUEST:
         raise ValueError(
             f"start_page must be between 1 and {PAGES_TO_REQUEST}"
@@ -1818,6 +1851,7 @@ def request_pages(
             status_code=response.status_code,
             redirect_location=redirect_target(response),
             stats=stats,
+            items=parse_catalog_listings(response),
         )
         results.append(result)
         if stats is not None:
@@ -1843,11 +1877,36 @@ def request_pages(
             log_bad_request_response(response, context=f"page p={page}")
         if response.status_code in (403, 429, 439):
             return tuple(results), response
+        if stats is not None and is_last_catalog_page(page, stats):
+            LOGGER.info(
+                "page p=%s is the last one for totalCount=%s",
+                page,
+                stats.total_count,
+            )
+            break
+        if (
+            stop_after is not None
+            and response.status_code == 200
+            and stop_after(result)
+        ):
+            LOGGER.info("page p=%s: caller requested to stop here", page)
+            break
     return tuple(results), None
 
 
-def run() -> CompletedFlow:
-    """Run the items XHR loop and clear each protection branch it selects."""
+def run(
+    on_page_results: Callable[[tuple[PageRequestResult, ...]], None]
+    | None = None,
+    *,
+    start_page: int = 1,
+    stop_after: Callable[[PageRequestResult], bool] | None = None,
+) -> CompletedFlow:
+    """Run the items XHR loop and clear each protection branch it selects.
+
+    ``on_page_results`` receives every finished segment of page requests as
+    soon as it is available, so callers keep the listings collected so far
+    even when a later protection branch aborts the run.
+    """
     # This flow must use the machine's public connection. In particular, do
     # not silently inherit a desktop/VPN proxy such as 127.0.0.1:2080. Removing
     # these variables also covers the image downloads made inside GeekedTest.
@@ -1873,7 +1932,7 @@ def run() -> CompletedFlow:
         session,
         verification_chain=verification_chain,
     )
-    next_page = 1
+    next_page = start_page
     all_page_requests: list[PageRequestResult] = []
     last_protected_page: int | None = None
     protection_transitions_on_page = 0
@@ -1887,8 +1946,11 @@ def run() -> CompletedFlow:
             start_page=next_page,
             verification_chain=verification_chain,
             first_page_diagnostic_context=diagnostic_context,
+            stop_after=stop_after,
         )
         all_page_requests.extend(page_requests)
+        if on_page_results is not None:
+            on_page_results(page_requests)
         if protection_response is None:
             LOGGER.info(
                 "items loop completed; verification chain: %s",

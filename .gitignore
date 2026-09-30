@@ -7,3 +7,7 @@ firewall-debug.log
 firewall-debug-responses/
 
 *.har
+
+# Search results and the registry of seen listings (real ads, not for git)
+output/
+data/
