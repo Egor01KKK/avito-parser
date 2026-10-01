@@ -24,6 +24,7 @@ except ImportError:  # the numbered fallback below still works
     questionary = None
 
 LINE = "─" * 44
+BACK = -1
 
 
 def ask(prompt: str) -> str:
@@ -47,12 +48,13 @@ def interactive() -> bool:
 def choose(title: str, options: list[str], *, back: str = "Назад") -> int | None:
     """Pick an option with arrows and Enter (or by number); None means back."""
     if interactive():
+        # questionary turns value=None into the title, so "back" needs its own value.
         choices = [questionary.Choice(option, value=index) for index, option in enumerate(options)]
-        choices.append(questionary.Choice(back, value=None))
+        choices.append(questionary.Choice(back, value=BACK))
         answer = questionary.select(
             title or "Что делаем?", choices=choices, instruction="(стрелки ↑↓, Enter)"
         ).ask()
-        return answer  # None: "back", or Ctrl+C / Esc
+        return None if answer in (BACK, None) else answer  # None after Ctrl+C too
     if title:
         print(f"\n{title}")
     for number, option in enumerate(options, start=1):
