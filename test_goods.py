@@ -110,3 +110,16 @@ def test_goods_alerts_only_private_people_by_default():
     assert private.alert(shop) is None
     assert private.alert(person) is not None
     assert everyone.alert(company) is not None
+
+
+def test_pow_challenge_comes_from_cookie_for_html_pages():
+    class Html439:
+        status_code = 439
+        def json(self):
+            raise ValueError("not json")
+
+    class Session:
+        cookies = {"pow_challenge": "abc"}
+
+    source = avito_client.pow_source(Html439(), Session())
+    assert source.json() == {"pow_challenge": "abc"}

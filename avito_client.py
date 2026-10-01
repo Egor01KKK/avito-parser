@@ -68,6 +68,29 @@ def response_kind(response: Any) -> str:
     return f"refused({status})"
 
 
+class _ChallengeFromCookie:
+    """Looks like the JSON 439 answer for main.run_pow_verification."""
+
+    def __init__(self, challenge: str) -> None:
+        self._challenge = challenge
+
+    def json(self) -> dict[str, str]:
+        return {"pow_challenge": self._challenge}
+
+
+def pow_source(response: Any, session: Any) -> Any:
+    """The 439 answer itself, or its challenge from the cookie.
+
+    XHR answers carry the challenge in the JSON body; HTML pages (an item
+    page, for one) show a "проверка безопасности" page and put the same
+    challenge into the ``pow_challenge`` cookie.
+    """
+    if main.response_has_pow_challenge(response):
+        return response
+    challenge = session.cookies.get("pow_challenge") if session is not None else None
+    return _ChallengeFromCookie(challenge) if challenge else response
+
+
 class CalmClient:
     """One Avito session at a time, replaced whenever a captcha appears."""
 
@@ -109,7 +132,7 @@ class CalmClient:
             kind = response_kind(response)
             if kind != "pow":
                 return kind, response
-            main.run_pow_verification(self.session, response)
+            main.run_pow_verification(self.session, pow_source(response, self.session))
         return "pow-loop", None
 
     def _open_session(self, catalog_url: str) -> None:

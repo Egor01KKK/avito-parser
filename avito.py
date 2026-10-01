@@ -48,8 +48,9 @@ HEARTBEAT_EVERY_CYCLES = 20
 MARKET_REFRESH_EVERY_CYCLES = 20
 # A listing alerts only if it entered the catalog this recently. Older ones
 # that surface on the first pages (paid promotion, reshuffles, the 1 500 cap)
-# are remembered silently.
-DEFAULT_FRESH_HOURS = 6.0
+# are remembered silently. Together with the silent first pass below, alerts
+# carry only what appears while watch is running.
+DEFAULT_FRESH_HOURS = 1.0
 # After a full scan only the top of the catalog changes: new listings come
 # first, and 50 per page leave plenty of room for promoted ones.
 DEFAULT_WATCH_PAGES = 1
@@ -90,6 +91,8 @@ HUMAN = {
     "PAGE": lambda f: f"  стр. {f['page']}: {f['items']} объявлений, новых {f['new']} (по поиску всего {f['total']})",
     "TABLE": lambda f: f"✓ Таблица: {f['path']}\n  " + ", ".join(
         f"{k}: {v}" for k, v in f.items() if k not in ("time", "search", "path")),
+    "PRIMED": lambda f: f"  ✓ «{f['search']}»: текущая выдача запомнена ({f['remembered']} новых для базы). "
+                        f"Дальше присылаю только то, что появится после запуска.",
     "WATCH": lambda f: f"👀 Слежу за: {', '.join(f['searches'])}. Цикл примерно раз в {f['interval_s']:.0f} с. "
                        f"Telegram: {'да' if f['telegram'] else 'нет'}. Остановить: Ctrl+C",
     "ALERT": _alert_text,
@@ -335,11 +338,9 @@ def cmd_watch(args: argparse.Namespace) -> None:
             say("TELEGRAM-ERROR", error=str(exc))
     client = avito_client.CalmClient(delay=args.delay, log=say)
     watched = []
+    primed: set[str] = set()
     for search in searches:
         base = search.load("listings.json")
-        if not base:
-            say("ERROR", search=search.name,
-                error="база пуста: сначала scan, иначе первые страницы целиком придут как «новые»")
         watched.append((search, base, search.load("seen.json"),
                         profiles.PROFILES[search.profile](base, search.home_city, search.alert_sellers)))
         search.dir.mkdir(parents=True, exist_ok=True)
@@ -351,6 +352,10 @@ def cmd_watch(args: argparse.Namespace) -> None:
             for search, base, seen, profile in watched:
                 try:
                     changed = False
+                    # The first pass only remembers what is already listed:
+                    # alerts are for listings that appear after watch starts.
+                    first_pass = search.name not in primed
+                    remembered = 0
                     for number in range(1, search.watch_pages + 1):
                         page = client.page(catalog_url=search.catalog_url, params=search.request_params, number=number)
                         stamp = datetime.now().isoformat(timespec="seconds")
@@ -361,6 +366,9 @@ def cmd_watch(args: argparse.Namespace) -> None:
                             seen[key] = stamp
                             base[key] = item
                             changed = True
+                            if first_pass:
+                                remembered += 1
+                                continue
                             listed_at = listed_since(item)
                             if not is_fresh(listed_at, search.fresh_hours):
                                 continue
@@ -381,6 +389,9 @@ def cmd_watch(args: argparse.Namespace) -> None:
                     if changed:
                         search.save("listings.json", base)
                         search.save("seen.json", seen)
+                    if first_pass:
+                        primed.add(search.name)
+                        say("PRIMED", search=search.name, remembered=remembered)
                 except (RuntimeError, ValueError, *avito_client.TRANSPORT_ERRORS) as exc:
                     say("ERROR", search=search.name, error=f"{type(exc).__name__}: {exc}"[:300])
                 if cycle % MARKET_REFRESH_EVERY_CYCLES == 0 and hasattr(profile, "refresh_market"):
