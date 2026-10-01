@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Avito searches: add by link, collect everything, watch, send to Telegram.
 
+    uv run python avito.py                                 # меню: выбор цифрами
     uv run python avito.py add "<ссылка на поиск Авито>"   # завести поиск по ссылке
     uv run python avito.py list                            # какие поиски есть
     uv run python avito.py scan <поиск>                    # собрать все страницы
@@ -377,6 +378,11 @@ def cmd_telegram(args: argparse.Namespace) -> None:
 
 def main_cli(argv: list[str] | None = None) -> None:
     global JSON_OUTPUT
+    if not (sys.argv[1:] if argv is None else argv):
+        import menu  # no command: the interactive menu
+
+        menu.main()
+        return
     parser = argparse.ArgumentParser(
         prog="avito.py",
         description="Поиски на Авито: добавить по ссылке, собрать, следить, таблицы, Telegram",
