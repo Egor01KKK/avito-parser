@@ -18,6 +18,10 @@ import avito
 import avito_client
 import telegram_notify
 
+# Some terminals (e.g. embedded panes) never answer the cursor position
+# request; without this prompt_toolkit prints a warning before every menu.
+os.environ.setdefault("PROMPT_TOOLKIT_NO_CPR", "1")
+
 try:
     import questionary
 except ImportError:  # the numbered fallback below still works
