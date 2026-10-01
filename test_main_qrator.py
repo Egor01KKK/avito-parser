@@ -445,7 +445,7 @@ def test_http_403_dispatcher_is_routed_to_captcha_flow(tmp_path) -> None:
         session,
         referer=main.PAGE_REQUEST_HEADERS["Referer"],
     )
-    assert (tmp_path / "page-p-13-http-403.json").read_text() == body
+    assert (tmp_path / "page-p-13-http-403.json").read_text(encoding="utf-8") == body
 
 
 def test_http_429_dispatcher_still_routes_to_captcha_flow(tmp_path) -> None:
@@ -490,7 +490,7 @@ def test_http_429_dispatcher_still_routes_to_captcha_flow(tmp_path) -> None:
         session,
         referer=main.PAGE_REQUEST_HEADERS["Referer"],
     )
-    assert (tmp_path / "page-p-13-http-429.json").read_text() == body
+    assert (tmp_path / "page-p-13-http-429.json").read_text(encoding="utf-8") == body
 
 
 def test_firewall_captcha_get_selects_geetest_with_exact_request() -> None:

@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parent
 
 
 def _captured_fields() -> tuple[dict, dict[str, str]]:
-    trace = json.loads((ROOT / "qrator-fingerprint-trace.json").read_text())
+    trace = json.loads((ROOT / "qrator-fingerprint-trace.json").read_text(encoding="utf-8"))
     body = trace["submittedFtRequest"]["body"]
     fields = {
         name: re.search(
@@ -38,7 +38,7 @@ def test_s_matches_bundle_and_decodes_to_extension_state_json() -> None:
 
 
 def test_camoufox_f_round_trip() -> None:
-    trace = json.loads((ROOT / "qrator-camoufox-trace.json").read_text())
+    trace = json.loads((ROOT / "qrator-camoufox-trace.json").read_text(encoding="utf-8"))
     fields = trace["ftRequests"][0]["fields"]
 
     assert decode_field(fields["f"], "f") == trace["decoded"]["f"]
@@ -46,7 +46,7 @@ def test_camoufox_f_round_trip() -> None:
 
 
 def test_camoufox_s_round_trip() -> None:
-    trace = json.loads((ROOT / "qrator-camoufox-trace.json").read_text())
+    trace = json.loads((ROOT / "qrator-camoufox-trace.json").read_text(encoding="utf-8"))
     fields = trace["ftRequests"][0]["fields"]
 
     assert decode_field(fields["s"], "s") == trace["decoded"]["s"]
