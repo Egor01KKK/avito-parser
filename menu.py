@@ -18,6 +18,11 @@ import avito
 import avito_client
 import telegram_notify
 
+try:
+    import questionary
+except ImportError:  # the numbered fallback below still works
+    questionary = None
+
 LINE = "─" * 44
 
 
@@ -28,8 +33,26 @@ def ask(prompt: str) -> str:
         raise SystemExit(0) from None
 
 
+def confirm(question: str) -> bool:
+    if interactive():
+        return bool(questionary.confirm(question, default=False).ask())
+    return ask(f"{question} (да/нет) ").lower() in ("да", "y", "yes", "д")
+
+
+def interactive() -> bool:
+    """Arrow-key menus need a real terminal; piped input gets numbers."""
+    return questionary is not None and sys.stdin.isatty() and sys.stdout.isatty()
+
+
 def choose(title: str, options: list[str], *, back: str = "Назад") -> int | None:
-    """Show numbered options; return the 0-based choice or None for back."""
+    """Pick an option with arrows and Enter (or by number); None means back."""
+    if interactive():
+        choices = [questionary.Choice(option, value=index) for index, option in enumerate(options)]
+        choices.append(questionary.Choice(back, value=None))
+        answer = questionary.select(
+            title or "Что делаем?", choices=choices, instruction="(стрелки ↑↓, Enter)"
+        ).ask()
+        return answer  # None: "back", or Ctrl+C / Esc
     if title:
         print(f"\n{title}")
     for number, option in enumerate(options, start=1):
@@ -147,7 +170,7 @@ def my_searches() -> None:
         elif action == 2:
             table(search.name)
         elif action == 3:
-            if ask(f"Удалить «{search.title}»? Собранные данные останутся на диске. (да/нет) ").lower() in ("да", "y", "yes", "д"):
+            if confirm(f"Удалить «{search.title}»? Собранные данные останутся на диске."):
                 (avito.SEARCHES_DIR / f"{search.name}.json").unlink()
                 print("Удалено.")
 
@@ -156,6 +179,15 @@ def watch_several() -> None:
     items = searches()
     if not items:
         print("\nПоисков пока нет.")
+        return
+    if interactive():
+        names = questionary.checkbox(
+            "За какими поисками следить?",
+            choices=[questionary.Choice(search.title, value=search.name) for search in items],
+            instruction="(пробел — отметить, Enter — начать)",
+        ).ask() or []
+        if names:
+            watch(names)
         return
     print("\nЗа какими поисками следить? Номера через запятую или «все».")
     for number, search in enumerate(items, start=1):
@@ -183,6 +215,14 @@ def telegram_menu() -> None:
 
 
 def main() -> None:
+    """The menu loop; Ctrl+C outside an action quits quietly."""
+    try:
+        loop()
+    except KeyboardInterrupt:
+        print("\nВыход.")
+
+
+def loop() -> None:
     avito.JSON_OUTPUT = False
     while True:
         try:
@@ -205,7 +245,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except KeyboardInterrupt:
-        print()
+    main()
