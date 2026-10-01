@@ -22,7 +22,8 @@ from __future__ import annotations
 
 import argparse
 import json
-import signal
+import _thread
+import threading
 import statistics
 from datetime import datetime, timedelta
 from typing import Any
@@ -37,17 +38,19 @@ MAX_CATALOG_PAGES = 6
 
 
 def run_watch(search: avito.Search, minutes: float, interval: float) -> tuple[datetime, datetime]:
-    def stop(*_: Any) -> None:
-        raise KeyboardInterrupt
-
-    signal.signal(signal.SIGALRM, stop)
-    signal.alarm(int(minutes * 60))
+    # A timer that interrupts the main thread works on Windows too (SIGALRM
+    # does not exist there); watch treats it like Ctrl+C.
+    timer = threading.Timer(minutes * 60, _thread.interrupt_main)
+    timer.daemon = True
+    timer.start()
     start = datetime.now()
-    avito.cmd_watch(argparse.Namespace(
-        names=[search.name], interval=interval,
-        delay=avito_client.DEFAULT_DELAY_SECONDS, no_telegram=False,
-    ))
-    signal.alarm(0)
+    try:
+        avito.cmd_watch(argparse.Namespace(
+            names=[search.name], interval=interval,
+            delay=avito_client.DEFAULT_DELAY_SECONDS, no_telegram=False,
+        ))
+    finally:
+        timer.cancel()
     return start, datetime.now()
 
 

@@ -12,27 +12,32 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "curl-cffi" },
+    { name = "openpyxl" },
+    { name = "questionary" },
+]
+
+[package.optional-dependencies]
+captcha = [
     { name = "ddddocr" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
     { name = "numpy", version = "2.5.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
     { name = "opencv-python-headless" },
-    { name = "openpyxl" },
     { name = "pycryptodome" },
-    { name = "questionary" },
     { name = "requests" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "curl-cffi", specifier = ">=0.15.0" },
-    { name = "ddddocr", git = "https://github.com/sml2h3/ddddocr.git?rev=main" },
-    { name = "numpy", specifier = ">=2.2.1" },
-    { name = "opencv-python-headless", specifier = ">=4.10.0.84" },
+    { name = "ddddocr", marker = "extra == 'captcha'", git = "https://github.com/sml2h3/ddddocr.git?rev=main" },
+    { name = "numpy", marker = "extra == 'captcha'", specifier = ">=2.2.1" },
+    { name = "opencv-python-headless", marker = "extra == 'captcha'", specifier = ">=4.10.0.84" },
     { name = "openpyxl", specifier = ">=3.1.5" },
-    { name = "pycryptodome", specifier = ">=3.21.0" },
+    { name = "pycryptodome", marker = "extra == 'captcha'", specifier = ">=3.21.0" },
     { name = "questionary", specifier = ">=2.1.1" },
-    { name = "requests", specifier = ">=2.32.3" },
+    { name = "requests", marker = "extra == 'captcha'", specifier = ">=2.32.3" },
 ]
+provides-extras = ["captcha"]
 
 [[package]]
 name = "certifi"

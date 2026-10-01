@@ -1,0 +1,36 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install (no git, no captcha extras — as a user would)
+        run: uv sync
+
+      - name: Run the test suite
+        run: uv run --with pytest pytest -q
+
+      - name: Commands start and print Cyrillic
+        run: |
+          uv run python avito.py --help
+          uv run python avito.py list
+          uv run python avito.py --json list
+          echo 0 | uv run python avito.py
+          uv run python avito.py --json list > list.jsonl
+          cat list.jsonl

@@ -226,6 +226,7 @@ def telegram_menu() -> None:
 
 def main() -> None:
     """The menu loop; Ctrl+C outside an action quits quietly."""
+    avito.use_utf8_output()
     try:
         loop()
     except KeyboardInterrupt:

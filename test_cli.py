@@ -89,3 +89,33 @@ def test_scan_also_walks_newest_first(tmp_path, monkeypatch):
 
     assert seen_params and all(params["s"] == "104" for params in seen_params)
     assert seen_params[0]["categoryId"] == "84"
+
+
+def test_output_survives_a_windows_code_page(monkeypatch):
+    """Piped output on Windows is cp1251, where emoji cannot be encoded."""
+    import io
+    import sys
+
+    raw = io.BytesIO()
+    cp1251 = io.TextIOWrapper(raw, encoding="cp1251")
+    monkeypatch.setattr(sys, "stdout", cp1251)
+    monkeypatch.setattr(sys, "stderr", io.TextIOWrapper(io.BytesIO(), encoding="cp1251"))
+    monkeypatch.setattr(avito, "JSON_OUTPUT", False)
+
+    avito.use_utf8_output()
+    avito.say("ALERT", search="phones", title="iPhone 15", price="35 000 ₽", url="https://www.avito.ru/x_1",
+              views="7 (+7 сегодня)")
+    sys.stdout.flush()
+
+    assert "🔔".encode("utf-8") in raw.getvalue()
+    assert "просмотров".encode("utf-8") in raw.getvalue()
+
+
+def test_without_the_fix_that_code_page_really_fails():
+    import io
+    import pytest
+
+    cp1251 = io.TextIOWrapper(io.BytesIO(), encoding="cp1251")
+    with pytest.raises(UnicodeEncodeError):
+        print("🔔", file=cp1251)
+        cp1251.flush()

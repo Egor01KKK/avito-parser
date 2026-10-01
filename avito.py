@@ -466,8 +466,25 @@ def cmd_telegram(args: argparse.Namespace) -> None:
         fail(str(exc))
 
 
+def use_utf8_output() -> None:
+    """Print Cyrillic and emoji anywhere.
+
+    On Windows, output that goes to a file or another program (an agent
+    reading --json, for one) uses the locale code page (cp1251), where "🔔"
+    cannot be written and print() raises. UTF-8 works everywhere.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (ValueError, OSError):
+                pass
+
+
 def main_cli(argv: list[str] | None = None) -> None:
     global JSON_OUTPUT
+    use_utf8_output()
     if not (sys.argv[1:] if argv is None else argv):
         import menu  # no command: the interactive menu
 

@@ -122,15 +122,43 @@ uv run python apartments.py
 каталог заново. База объявлений и список уже виденных лежат в `data/`;
 `output/` и `data/` исключены из Git.
 
-## Быстрый запуск
+## Установка
 
-Нужен установленный [uv](https://docs.astral.sh/uv/).
+Нужен [uv](https://docs.astral.sh/uv/). Git не нужен: проект можно скачать
+архивом (GitHub → Code → Download ZIP) и распаковать.
+
+**macOS / Linux** (Терминал):
 
 ```bash
-git clone https://github.com/mickberrad659-sketch/Avito-Parser.git
-cd Avito-Parser
-uv sync
-uv run python main.py
+curl -LsSf https://astral.sh/uv/install.sh | sh
+```
+
+**Windows** (PowerShell, затем откройте новое окно PowerShell):
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+```
+
+Дальше одинаково на всех системах — перейти в папку проекта и запустить меню:
+
+```bash
+cd путь\к\avito-parser
+uv run python avito.py
+```
+
+Первый запуск сам скачает Python и библиотеки (около минуты). На Windows
+меню лучше открывать в Windows Terminal или PowerShell: стрелки и эмодзи
+там работают. Тесты на Windows прогоняются автоматически на GitHub
+(Actions → tests) после каждого обновления.
+
+## Старый поток main.py (с решением капчи)
+
+`main.py` решает GeeTest и требует дополнительных библиотек, одна из которых
+ставится с GitHub (нужен git):
+
+```bash
+uv sync --extra captcha
+uv run --extra captcha python main.py
 ```
 
 `main.py` не использует `HTTP_PROXY`, `HTTPS_PROXY` и `ALL_PROXY` из
