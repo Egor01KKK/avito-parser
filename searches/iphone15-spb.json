@@ -1,11 +1,14 @@
 {
-  "title": "iPhone 15 в Петербурге",
+  "title": "Apple iPhone 15 в Санкт-Петербурге",
   "profile": "goods",
   "catalog_url": "https://www.avito.ru/sankt-peterburg/telefony/mobilnye_telefony/apple/iphone_15-ASgBAgICA0SywA2SoO0RtMANzqs5sMENiPw3",
   "params": {
     "categoryId": "84",
     "locationId": "653240",
-    "q": "iphone 15"
+    "params[110617][0]": "18720777",
+    "params[110618][0]": "469735",
+    "params[110680]": "458500"
   },
-  "watch_pages": 1
+  "watch_pages": 1,
+  "source_link": "https://www.avito.ru/sankt-peterburg/telefony/mobilnye_telefony/apple/iphone_15-ASgBAgICA0SywA2SoO0RtMANzqs5sMENiPw3"
 }

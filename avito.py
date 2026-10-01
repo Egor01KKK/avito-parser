@@ -34,6 +34,7 @@ from urllib.parse import urlsplit
 
 import apartments
 import avito_client
+import item_page
 import link_resolver
 import profiles
 import telegram_notify
@@ -48,9 +49,10 @@ HEARTBEAT_EVERY_CYCLES = 20
 MARKET_REFRESH_EVERY_CYCLES = 20
 # A listing alerts only if it entered the catalog this recently. Older ones
 # that surface on the first pages (paid promotion, reshuffles, the 1 500 cap)
-# are remembered silently. Together with the silent first pass below, alerts
-# carry only what appears while watch is running.
-DEFAULT_FRESH_HOURS = 1.0
+# are remembered silently. Avito moderation can hold a new listing back for
+# most of an hour (47 min seen), so the window is wider than that; old
+# re-published listings are caught by their view counter instead.
+DEFAULT_FRESH_HOURS = 3.0
 # After a full scan only the top of the catalog changes: new listings come
 # first, and 50 per page leave plenty of room for promoted ones.
 DEFAULT_WATCH_PAGES = 1
@@ -80,6 +82,8 @@ def _alert_text(f: dict[str, Any]) -> str:
         lines.append(f"   {f.get('verdict')}: {'; '.join(f['reasons'])}")
     if f.get("notes"):
         lines.append(f"   ⚠ {'; '.join(f['notes'])}")
+    if f.get("views"):
+        lines.append(f"   👁 просмотров: {f['views']}")
     lines.append(f"   {f.get('url')}")
     if f.get("draft"):
         lines.append(f"   ✉ {f['draft']}")
@@ -91,6 +95,8 @@ HUMAN = {
     "PAGE": lambda f: f"  стр. {f['page']}: {f['items']} объявлений, новых {f['new']} (по поиску всего {f['total']})",
     "TABLE": lambda f: f"✓ Таблица: {f['path']}\n  " + ", ".join(
         f"{k}: {v}" for k, v in f.items() if k not in ("time", "search", "path")),
+    "REPUBLISHED": lambda f: f"  · пропущено переопубликованное старое: {f['title']} {f['price']} "
+                             f"({f['total_views']} просмотров, сегодня {f['today_views']})",
     "PRIMED": lambda f: f"  ✓ «{f['search']}»: текущая выдача запомнена ({f['remembered']} новых для базы). "
                         f"Дальше присылаю только то, что появится после запуска.",
     "WATCH": lambda f: f"👀 Слежу за: {', '.join(f['searches'])}. Цикл примерно раз в {f['interval_s']:.0f} с. "
@@ -134,6 +140,7 @@ class Search:
     watch_pages: int = DEFAULT_WATCH_PAGES
     fresh_hours: float = DEFAULT_FRESH_HOURS
     alert_sellers: str = "private"
+    new_only: bool = True
 
     @property
     def dir(self) -> Path:
@@ -183,6 +190,7 @@ def load_search(name: str) -> Search:
         watch_pages=int(config.get("watch_pages", DEFAULT_WATCH_PAGES)),
         fresh_hours=float(config.get("fresh_hours", DEFAULT_FRESH_HOURS)),
         alert_sellers=str(config.get("alert_sellers", "private")),
+        new_only=bool(config.get("new_only", True)),
     )
 
 
@@ -195,6 +203,25 @@ def write_table(search: Search, seen_before: dict[str, str]) -> Path | None:
     counts = profile.write_table(path, seen_before)
     say("TABLE", search=search.name, path=str(path), **counts)
     return path
+
+
+def check_newly_created(client: avito_client.CalmClient, search: Search, fields: dict[str, Any]) -> bool:
+    """Open the listing's page: a re-published old listing has views from earlier days.
+
+    Adds the views to ``fields``; returns False for a re-published listing.
+    If the page cannot be read the alert still goes out, marked unchecked.
+    """
+    page = item_page.fetch(client, fields["url"], catalog_url=search.catalog_url)
+    verdict = item_page.is_newly_created(page) if page else None
+    if verdict is None:
+        fields["notes"] = [*fields.get("notes", []), "не удалось проверить, новое ли объявление"]
+        return True
+    fields["views"] = f"{page.total_views} (+{page.today_views} сегодня)"
+    if not verdict:
+        say("REPUBLISHED", search=search.name, title=fields.get("title"), price=fields.get("price"),
+            total_views=page.total_views, today_views=page.today_views, url=fields["url"])
+        return False
+    return True
 
 
 def listed_since(item: dict[str, Any]) -> datetime | None:
@@ -376,6 +403,8 @@ def cmd_watch(args: argparse.Namespace) -> None:
                             if fields is None:
                                 continue
                             fields = {"search": search.name, **fields}
+                            if search.new_only and not check_newly_created(client, search, fields):
+                                continue
                             if listed_at is not None:
                                 fields["listed_at"] = listed_at.strftime("%d.%m %H:%M")
                             with search.path("alerts.jsonl").open("a", encoding="utf-8") as handle:

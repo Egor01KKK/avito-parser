@@ -6,7 +6,8 @@
 2. Garbage check: opens every alerted listing's own page on Avito and reads
    its publication date there ("29 сентября в 07:21"), an independent source.
    An alert is garbage if the listing was published more than fresh_hours
-   before the alert, or breaks the search's seller/city rules.
+   before the alert, has views from earlier days (an old re-published one),
+   or breaks the search's seller/city rules.
 3. Miss check: walks the catalog newest first back to the start of the test
    and collects every listing that entered it during the test and passes the
    same rules; each must have alerted.
@@ -21,7 +22,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 import signal
 import statistics
 from datetime import datetime, timedelta
@@ -30,49 +30,10 @@ from typing import Any
 import avito
 import avito_client
 import goods
+import item_page
 import profiles
 
-MONTHS = {
-    "января": 1, "февраля": 2, "марта": 3, "апреля": 4, "мая": 5, "июня": 6,
-    "июля": 7, "августа": 8, "сентября": 9, "октября": 10, "ноября": 11, "декабря": 12,
-}
-ITEM_DATE = re.compile(r'data-marker="item-view/item-date"[^>]*>(.*?)</span>', re.S)
 MAX_CATALOG_PAGES = 6
-
-
-def parse_item_date(text: str, now: datetime) -> datetime | None:
-    """ "сегодня в 17:05", "вчера в 09:12", "29 сентября в 07:21", "3 мая 2025 в 10:00"."""
-    text = re.sub(r"<[^>]+>|·", " ", text).replace("\xa0", " ").strip().lower()
-    clock = re.search(r"в (\d{1,2}):(\d{2})", text)
-    if not clock:
-        return None
-    hour, minute = int(clock[1]), int(clock[2])
-    if "сегодня" in text:
-        day = now.date()
-    elif "вчера" in text:
-        day = (now - timedelta(days=1)).date()
-    else:
-        found = re.search(r"(\d{1,2}) ([а-я]+)(?: (\d{4}))?", text)
-        if not found or found[2] not in MONTHS:
-            return None
-        year = int(found[3]) if found[3] else now.year
-        day = datetime(year, MONTHS[found[2]], int(found[1])).date()
-        if not found[3] and day > now.date():
-            day = day.replace(year=year - 1)
-    return datetime(day.year, day.month, day.day, hour, minute)
-
-
-def publication_date(client: avito_client.CalmClient, url: str, catalog_url: str) -> tuple[datetime | None, str]:
-    if client.session is None:
-        client._open_session(catalog_url)
-    kind, response = client._get(url, document=True)
-    if kind != "ok":
-        client.session = None
-        return None, f"страница не открылась ({kind})"
-    match = ITEM_DATE.search(response.text)
-    if not match:
-        return None, "дата на странице не найдена (объявление снято?)"
-    return parse_item_date(match.group(1), datetime.now()), re.sub(r"<[^>]+>", "", match.group(1)).strip(" ·")
 
 
 def run_watch(search: avito.Search, minutes: float, interval: float) -> tuple[datetime, datetime]:
@@ -110,7 +71,9 @@ def main() -> None:
     client = avito_client.CalmClient(log=avito.say)
     checked = []
     for alert in alerts:
-        published, raw = publication_date(client, alert["url"], search.catalog_url)
+        page = item_page.fetch(client, alert["url"], catalog_url=search.catalog_url)
+        published = page.published if page else None
+        raw = page.published_text if page else "страница не открылась (объявление снято?)"
         found = datetime.fromisoformat(alert["found"])
         lag_min = round((found - published).total_seconds() / 60, 1) if published else None
         problems = []
@@ -118,6 +81,8 @@ def main() -> None:
             problems.append(raw)
         elif lag_min > search.fresh_hours * 60:
             problems.append(f"старое: опубликовано {raw}, за {lag_min / 60:.1f} ч до уведомления")
+        if page and item_page.is_newly_created(page) is False:
+            problems.append(f"переопубликованное: {page.total_views} просмотров, сегодня {page.today_views}")
         if search.profile == "goods" and search.alert_sellers == "private":
             if alert.get("seller") != "частное лицо":
                 problems.append(f"продавец: {alert.get('seller')}")

@@ -134,6 +134,8 @@ def realty_message(search_title: str, alert: dict[str, Any]) -> str:
     ]
     if alert.get("notes"):
         lines.append("⚠️ " + esc("; ".join(alert["notes"])))
+    if alert.get("views"):
+        lines.append(f"👁 просмотров: {esc(alert['views'])}")
     lines.append(f'<a href="{esc(alert["url"])}">Открыть на Авито</a>')
     if alert.get("draft"):
         lines.append(f"\n✉️ <i>Черновик:</i>\n<code>{esc(alert['draft'])}</code>")
@@ -157,6 +159,8 @@ def goods_message(search_title: str, alert: dict[str, Any]) -> str:
     if alert.get("closed_listings") is not None:
         seller += f", завершённых объявлений: {esc(alert['closed_listings'])}"
     lines.append(f"👤 {seller}")
+    if alert.get("views"):
+        lines.append(f"👁 просмотров: {esc(alert['views'])}")
     if alert.get("notes"):
         lines.append("⚠️ " + esc("; ".join(alert["notes"])))
     lines.append(f'<a href="{esc(alert["url"])}">Открыть на Авито</a>')

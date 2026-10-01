@@ -175,6 +175,25 @@ class CalmClient:
             self.session = None
         raise RuntimeError(f"{context}: no answer after {MAX_SESSION_RESETS_PER_PAGE} new sessions")
 
+    def get_document(self, url: str, *, catalog_url: str) -> str | None:
+        """HTML of a page such as a listing; None if Avito would not show it."""
+        for _ in range(MAX_SESSION_RESETS_PER_PAGE + 1):
+            if self.session is None:
+                self._open_session(catalog_url)
+            try:
+                kind, response = self._get(url, document=True)
+            except TRANSPORT_ERRORS as exc:
+                self.log("TRANSPORT", context="item page", error=type(exc).__name__)
+                self.session = None
+                continue
+            if kind == "ok":
+                return response.text
+            if kind.startswith("refused"):
+                return None  # removed listing (404) and the like
+            self.log("SESSION-RESET", reason=kind, context="item page")
+            self.session = None
+        return None
+
     def page_payload(self, *, catalog_url: str, params: dict[str, str], number: int) -> dict[str, Any]:
         """The full items answer: listings, counters, filters, category tree."""
         return self.get_json(
