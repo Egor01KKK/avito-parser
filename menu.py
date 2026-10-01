@@ -91,8 +91,12 @@ def scan(name: str) -> bool:
 
 
 def watch(names: list[str]) -> None:
+    speed = choose("Как часто проверять новые?", [label for label, _ in avito.WATCH_SPEEDS], back="Отмена")
+    if speed is None:
+        return
+    interval = avito.WATCH_SPEEDS[speed][1]
     print("Слежу за новыми объявлениями. Вернуться в меню: Ctrl+C")
-    run(avito.cmd_watch, names=names, interval=180, delay=avito_client.DEFAULT_DELAY_SECONDS,
+    run(avito.cmd_watch, names=names, interval=interval, delay=avito_client.DEFAULT_DELAY_SECONDS,
         no_telegram=False)
 
 
@@ -129,7 +133,7 @@ def new_search() -> None:
         return
     before = {path.stem for path in avito.SEARCHES_DIR.glob("*.json")}
     print("Проверяю ссылку на Авито, это займёт около минуты…")
-    ok = run(avito.cmd_add, url=url, name=None, profile=None, city=None, watch_pages=2,
+    ok = run(avito.cmd_add, url=url, name=None, profile=None, city=None, watch_pages=avito.DEFAULT_WATCH_PAGES,
              dry_run=False, replace=False, delay=5.0)
     added = sorted({path.stem for path in avito.SEARCHES_DIR.glob("*.json")} - before)
     if not ok or not added:

@@ -324,7 +324,7 @@ class ResolvedSearch:
     samples: list[str]
     warnings: list[str]
 
-    def config(self, watch_pages: int = 2) -> dict[str, Any]:
+    def config(self, watch_pages: int = 1) -> dict[str, Any]:
         return {
             "title": self.title,
             "profile": self.profile,

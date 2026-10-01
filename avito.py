@@ -50,6 +50,15 @@ MARKET_REFRESH_EVERY_CYCLES = 20
 # that surface on the first pages (paid promotion, reshuffles, the 1 500 cap)
 # are remembered silently.
 DEFAULT_FRESH_HOURS = 6.0
+# After a full scan only the top of the catalog changes: new listings come
+# first, and 50 per page leave plenty of room for promoted ones.
+DEFAULT_WATCH_PAGES = 1
+# Seconds between watch cycles, chosen in the menu as "speed".
+WATCH_SPEEDS = (
+    ("Быстро — раз в минуту (рекомендую)", 60),
+    ("Спокойно — раз в 3 минуты", 180),
+    ("Максимум — раз в 20 секунд (упирается в потолок ~120 запросов в час)", 20),
+)
 
 load_json = apartments.load_seen
 save_json = apartments.save_json
@@ -118,7 +127,7 @@ class Search:
     profile: str
     catalog_url: str
     params: dict[str, str]
-    watch_pages: int = 2
+    watch_pages: int = DEFAULT_WATCH_PAGES
     fresh_hours: float = DEFAULT_FRESH_HOURS
     alert_sellers: str = "private"
 
@@ -156,7 +165,7 @@ def load_search(name: str) -> Search:
         profile=config["profile"],
         catalog_url=config["catalog_url"],
         params={key: str(value) for key, value in config["params"].items()},
-        watch_pages=int(config.get("watch_pages", 2)),
+        watch_pages=int(config.get("watch_pages", DEFAULT_WATCH_PAGES)),
         fresh_hours=float(config.get("fresh_hours", DEFAULT_FRESH_HOURS)),
         alert_sellers=str(config.get("alert_sellers", "private")),
     )
@@ -424,7 +433,7 @@ def main_cli(argv: list[str] | None = None) -> None:
     add.add_argument("--name", help="имя поиска (латиница); по умолчанию из ссылки")
     add.add_argument("--profile", choices=sorted(profiles.PROFILES), help="тип обработки; по умолчанию по категории")
     add.add_argument("--city", help="город по-русски, если не определился из ссылки")
-    add.add_argument("--watch-pages", type=int, default=2, help="сколько первых страниц смотреть в watch")
+    add.add_argument("--watch-pages", type=int, default=DEFAULT_WATCH_PAGES, help="сколько первых страниц смотреть в watch")
     add.add_argument("--dry-run", action="store_true", help="только проверить ссылку, не сохранять")
     add.add_argument("--replace", action="store_true", help="перезаписать поиск с тем же именем")
     add.add_argument("--delay", type=float, default=5.0, help="секунд между запросами при проверке")
