@@ -1,27 +1,28 @@
 #!/usr/bin/env python3
-"""Avito searches: collect everything, watch for new listings, build tables.
+"""Avito searches: add by link, collect everything, watch, send to Telegram.
 
-A search is one JSON file in ``searches/`` (its name is the file name):
+    uv run python avito.py add "<ссылка на поиск Авито>"   # завести поиск по ссылке
+    uv run python avito.py list                            # какие поиски есть
+    uv run python avito.py scan <поиск>                    # собрать все страницы
+    uv run python avito.py watch <поиск> [<поиск> ...]     # следить за новыми
+    uv run python avito.py table <поиск>                   # таблица Excel
+    uv run python avito.py telegram setup                  # подключить свой бот
+    uv run python avito.py telegram test
 
-    {"title": ..., "profile": "realty-owner" | "goods",
-     "catalog_url": <the search page on avito.ru>,
-     "params": {<items API parameters>}, "watch_pages": 2}
-
-Every search keeps its own data in ``data/searches/<name>/`` and writes its
-tables to ``output/``.
-
-    uv run python avito.py list
-    uv run python avito.py scan iphone15-spb            # walk all pages
-    uv run python avito.py watch iphone15-spb flats-2k-spb-owners
-    uv run python avito.py table iphone15-spb           # rebuild the table
+A search is one JSON file in ``searches/`` (its name is the file name). Every
+search keeps its data in ``data/searches/<name>/`` and writes tables to
+``output/``. ``--json`` (before the command) prints one JSON object per line
+instead of text, for scripts and AI agents.
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import logging
 import random
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -32,11 +33,14 @@ from urllib.parse import urlsplit
 
 import apartments
 import avito_client
+import link_resolver
 import profiles
+import telegram_notify
 
 BASE_DIR = Path(__file__).resolve().parent
 SEARCHES_DIR = BASE_DIR / "searches"
 DATA_DIR = BASE_DIR / "data" / "searches"
+LOCATIONS_CACHE = BASE_DIR / "data" / "locations.json"
 OUTPUT_DIR = BASE_DIR / "output"
 MAX_PAGES = 100
 HEARTBEAT_EVERY_CYCLES = 20
@@ -44,12 +48,60 @@ MARKET_REFRESH_EVERY_CYCLES = 20
 
 load_json = apartments.load_seen
 save_json = apartments.save_json
+JSON_OUTPUT = False
+
+
+def _alert_text(f: dict[str, Any]) -> str:
+    head = f"🔔 [{f.get('search')}] {f.get('title')} — {f.get('price')}"
+    if f.get("vs_market"):
+        head += f" (рынок {f.get('market')}, {f['vs_market']})"
+    lines = [head]
+    if f.get("address") or f.get("metro"):
+        lines.append(f"   {f.get('address', '')}" + (f" · {f['metro']}" if f.get("metro") else ""))
+    if f.get("reasons"):
+        lines.append(f"   {f.get('verdict')}: {'; '.join(f['reasons'])}")
+    if f.get("notes"):
+        lines.append(f"   ⚠ {'; '.join(f['notes'])}")
+    lines.append(f"   {f.get('url')}")
+    if f.get("draft"):
+        lines.append(f"   ✉ {f['draft']}")
+    return "\n".join(lines)
+
+
+HUMAN = {
+    "SCAN": lambda f: f"▶ Сбор «{f['search']}» со страницы {f['start_page']}",
+    "PAGE": lambda f: f"  стр. {f['page']}: {f['items']} объявлений, новых {f['new']} (по поиску всего {f['total']})",
+    "TABLE": lambda f: f"✓ Таблица: {f['path']}\n  " + ", ".join(
+        f"{k}: {v}" for k, v in f.items() if k not in ("time", "search", "path")),
+    "WATCH": lambda f: f"👀 Слежу за: {', '.join(f['searches'])}. Цикл примерно раз в {f['interval_s']:.0f} с. "
+                       f"Telegram: {'да' if f['telegram'] else 'нет'}. Остановить: Ctrl+C",
+    "ALERT": _alert_text,
+    "SESSION-RESET": lambda f: "  · Авито показал капчу, открываю новую сессию",
+    "IP-BLOCK": lambda f: f"  ⏸ Авито ограничил доступ с этого IP, жду {f['wait_min']} мин и пробую снова",
+    "TRANSPORT": lambda f: "  · обрыв связи, повторяю",
+    "HEARTBEAT": lambda f: f"  · работаю: цикл {f['cycle']}, сессий открыто {f['sessions']}",
+    "TELEGRAM-ERROR": lambda f: f"  ✗ Telegram: {f['error']}",
+    "ERROR": lambda f: f"✗ Ошибка ({f.get('search', '')}): {f['error']}",
+}
 
 
 def say(kind: str, **fields: Any) -> None:
-    """One stdout line per event, easy to follow and to grep."""
+    """Report an event: readable text, or one JSON line with ``--json``."""
     stamp = datetime.now().strftime("%H:%M:%S")
-    print(f"{kind} " + json.dumps({"time": stamp, **fields}, ensure_ascii=False), flush=True)
+    if JSON_OUTPUT:
+        print(json.dumps({"event": kind, "time": stamp, **fields}, ensure_ascii=False), flush=True)
+        return
+    render = HUMAN.get(kind)
+    text = render(fields) if render else f"{kind} {json.dumps(fields, ensure_ascii=False)}"
+    print(f"{stamp} {text}", flush=True)
+
+
+def fail(message: str) -> None:
+    if JSON_OUTPUT:
+        print(json.dumps({"event": "FATAL", "error": message}, ensure_ascii=False), flush=True)
+    else:
+        print(f"✗ {message}", file=sys.stderr, flush=True)
+    raise SystemExit(1)
 
 
 @dataclass
@@ -85,10 +137,10 @@ def load_search(name: str) -> Search:
     try:
         config = json.loads(path.read_text(encoding="utf-8"))
     except FileNotFoundError:
-        known = ", ".join(sorted(p.stem for p in SEARCHES_DIR.glob("*.json")))
-        raise SystemExit(f"Нет поиска «{name}». Есть: {known}") from None
+        known = ", ".join(sorted(p.stem for p in SEARCHES_DIR.glob("*.json"))) or "пока ни одного"
+        fail(f"Нет поиска «{name}». Есть: {known}. Новый: avito.py add \"<ссылка>\"")
     if config.get("profile") not in profiles.PROFILES:
-        raise SystemExit(f"{path}: неизвестный profile «{config.get('profile')}»")
+        fail(f"{path}: неизвестный profile «{config.get('profile')}»")
     return Search(
         name=name,
         title=config.get("title", name),
@@ -110,13 +162,82 @@ def write_table(search: Search, seen_before: dict[str, str]) -> Path | None:
     return path
 
 
+def suggested_name(url: str) -> str:
+    """A file-friendly name such as "iphone_15-kazan" or "2-komnatnye-sankt-peterburg"."""
+    segments = [s for s in urlsplit(url).path.split("/") if s]
+    city = segments[0] if segments else "avito"
+    tail = segments[-1].split("-ASg")[0] if len(segments) > 1 else "vse"
+    tail = re.sub(r"-+$", "", tail) or (segments[1] if len(segments) > 1 else "vse")
+    name = re.sub(r"[^a-z0-9_-]+", "-", f"{tail}-{city}".lower()).strip("-")
+    candidate, index = name, 2
+    while (SEARCHES_DIR / f"{candidate}.json").exists():
+        candidate, index = f"{name}-{index}", index + 1
+    return candidate
+
+
+def cmd_add(args: argparse.Namespace) -> None:
+    """Turn an Avito search link into a saved search after checking it on Avito."""
+    name = args.name or suggested_name(args.url)
+    if not re.fullmatch(r"[a-z0-9_-]+", name):
+        fail("имя поиска: только латиница, цифры, «-» и «_»")
+    if (SEARCHES_DIR / f"{name}.json").exists() and not args.replace:
+        fail(f"поиск «{name}» уже есть; другое имя: --name, перезаписать: --replace")
+    cache = load_json(LOCATIONS_CACHE)
+    client = avito_client.CalmClient(delay=args.delay, log=say)
+    try:
+        resolved = link_resolver.resolve(
+            client, args.url, locations_cache=cache, city=args.city, profile=args.profile
+        )
+    except link_resolver.LinkError as exc:
+        fail(str(exc))
+    except (RuntimeError, ValueError, *avito_client.TRANSPORT_ERRORS) as exc:
+        fail(f"Авито не ответил: {exc}")
+    save_json(LOCATIONS_CACHE, cache)
+    summary = {
+        "name": name, "title": resolved.title, "profile": resolved.profile, "city": resolved.city,
+        "total": resolved.total, "filters": resolved.filters, "samples": resolved.samples,
+        "warnings": resolved.warnings, "saved": not args.dry_run,
+    }
+    if not args.dry_run:
+        SEARCHES_DIR.mkdir(parents=True, exist_ok=True)
+        (SEARCHES_DIR / f"{name}.json").write_text(
+            json.dumps(resolved.config(args.watch_pages), ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    if JSON_OUTPUT:
+        print(json.dumps({"event": "ADDED", **summary}, ensure_ascii=False), flush=True)
+        return
+    print(f"\n{'Сохранён' if not args.dry_run else 'Проверен (не сохранён)'} поиск «{name}»: {resolved.title}")
+    print(f"  Город: {resolved.city} · тип: {resolved.profile} · объявлений сейчас: {resolved.total}"
+          + (" (Авито показывает не больше 1500 на поиск)" if resolved.total >= 1500 else ""))
+    print("  Фильтры: " + ("; ".join(resolved.filters) if resolved.filters else "без фильтров"))
+    for title in resolved.samples:
+        print(f"    · {title}")
+    for warning in resolved.warnings:
+        print(f"  ⚠ {warning}")
+    if not args.dry_run:
+        print(f"\nДальше:\n  uv run python avito.py scan {name}\n  uv run python avito.py watch {name}")
+
+
 def cmd_list(_: argparse.Namespace) -> None:
+    rows = []
     for path in sorted(SEARCHES_DIR.glob("*.json")):
         search = load_search(path.stem)
         state = search.load("state.json")
-        stored = len(search.load("listings.json"))
-        progress = "пройден целиком" if state.get("complete") else f"следующая страница {state.get('next_page', 1)}"
-        print(f"{search.name:24} {search.profile:13} объявлений: {stored:5}  {progress}  — {search.title}")
+        rows.append({
+            "name": search.name, "profile": search.profile, "title": search.title,
+            "stored": len(search.load("listings.json")),
+            "complete": bool(state.get("complete")), "next_page": state.get("next_page", 1),
+        })
+    if JSON_OUTPUT:
+        for row in rows:
+            print(json.dumps({"event": "SEARCH", **row}, ensure_ascii=False))
+        return
+    if not rows:
+        print("Поисков пока нет. Добавить: uv run python avito.py add \"<ссылка на поиск Авито>\"")
+    for row in rows:
+        progress = "собран целиком" if row["complete"] else f"следующая страница {row['next_page']}"
+        print(f"{row['name']:28} {row['profile']:13} объявлений: {row['stored']:5}  {progress}  — {row['title']}")
 
 
 def cmd_scan(args: argparse.Namespace) -> None:
@@ -152,79 +273,155 @@ def cmd_scan(args: argparse.Namespace) -> None:
             number += 1
     except (RuntimeError, ValueError, *avito_client.TRANSPORT_ERRORS) as exc:
         say("ERROR", search=search.name, page=number, error=f"{type(exc).__name__}: {exc}"[:300])
+    except KeyboardInterrupt:
+        say("ERROR", search=search.name, page=number, error="остановлено; следующий scan продолжит с этой страницы")
     write_table(search, seen_before)
 
 
 def cmd_watch(args: argparse.Namespace) -> None:
     """Read the first pages of every search in turn; alert on unseen listings."""
     searches = [load_search(name) for name in args.names]
+    notifier = None
+    if not args.no_telegram:
+        try:
+            notifier = telegram_notify.Notifier.from_settings()
+        except telegram_notify.TelegramError as exc:
+            say("TELEGRAM-ERROR", error=str(exc))
     client = avito_client.CalmClient(delay=args.delay, log=say)
     watched = []
     for search in searches:
         base = search.load("listings.json")
-        watched.append((search, base, search.load("seen.json"), profiles.PROFILES[search.profile](base, search.home_city)))
+        if not base:
+            say("ERROR", search=search.name,
+                error="база пуста: сначала scan, иначе первые страницы целиком придут как «новые»")
+        watched.append((search, base, search.load("seen.json"),
+                        profiles.PROFILES[search.profile](base, search.home_city)))
         search.dir.mkdir(parents=True, exist_ok=True)
-    say("WATCH", searches=[s.name for s in searches], interval_s=args.interval)
+    say("WATCH", searches=[s.name for s in searches], interval_s=args.interval, telegram=notifier is not None)
     cycle = 0
-    while True:
-        cycle += 1
-        for search, base, seen, profile in watched:
-            try:
-                changed = False
-                for number in range(1, search.watch_pages + 1):
-                    page = client.page(catalog_url=search.catalog_url, params=search.params, number=number)
-                    stamp = datetime.now().isoformat(timespec="seconds")
-                    for item in page.items:
-                        key = str(item["id"])
-                        if key in seen:
-                            continue
-                        seen[key] = stamp
-                        base[key] = item
-                        changed = True
-                        fields = profile.alert(item)
-                        if fields is None:
-                            continue
-                        fields = {"search": search.name, **fields}
-                        with search.path("alerts.jsonl").open("a", encoding="utf-8") as handle:
-                            handle.write(json.dumps({"found": stamp, **fields}, ensure_ascii=False) + "\n")
-                        say("ALERT", **fields)
-                if changed:
-                    search.save("listings.json", base)
-                    search.save("seen.json", seen)
-            except (RuntimeError, ValueError, *avito_client.TRANSPORT_ERRORS) as exc:
-                say("ERROR", search=search.name, error=f"{type(exc).__name__}: {exc}"[:300])
-            if cycle % MARKET_REFRESH_EVERY_CYCLES == 0 and hasattr(profile, "refresh_market"):
-                profile.refresh_market()
-        if cycle % HEARTBEAT_EVERY_CYCLES == 0:
-            say("HEARTBEAT", cycle=cycle, sessions=client.sessions_opened)
-        time.sleep(args.interval * random.uniform(0.8, 1.2))
+    try:
+        while True:
+            cycle += 1
+            for search, base, seen, profile in watched:
+                try:
+                    changed = False
+                    for number in range(1, search.watch_pages + 1):
+                        page = client.page(catalog_url=search.catalog_url, params=search.params, number=number)
+                        stamp = datetime.now().isoformat(timespec="seconds")
+                        for item in page.items:
+                            key = str(item["id"])
+                            if key in seen:
+                                continue
+                            seen[key] = stamp
+                            base[key] = item
+                            changed = True
+                            fields = profile.alert(item)
+                            if fields is None:
+                                continue
+                            fields = {"search": search.name, **fields}
+                            with search.path("alerts.jsonl").open("a", encoding="utf-8") as handle:
+                                handle.write(json.dumps({"found": stamp, **fields}, ensure_ascii=False) + "\n")
+                            say("ALERT", **fields)
+                            if notifier is not None:
+                                try:
+                                    notifier.send(telegram_notify.message_for(search.profile, search.name, fields))
+                                except telegram_notify.TelegramError as exc:
+                                    say("TELEGRAM-ERROR", error=str(exc))
+                    if changed:
+                        search.save("listings.json", base)
+                        search.save("seen.json", seen)
+                except (RuntimeError, ValueError, *avito_client.TRANSPORT_ERRORS) as exc:
+                    say("ERROR", search=search.name, error=f"{type(exc).__name__}: {exc}"[:300])
+                if cycle % MARKET_REFRESH_EVERY_CYCLES == 0 and hasattr(profile, "refresh_market"):
+                    profile.refresh_market()
+            if cycle % HEARTBEAT_EVERY_CYCLES == 0:
+                say("HEARTBEAT", cycle=cycle, sessions=client.sessions_opened)
+            time.sleep(args.interval * random.uniform(0.8, 1.2))
+    except KeyboardInterrupt:
+        if not JSON_OUTPUT:
+            print("\nОстановлено. Новые объявления сохранены; следующий watch продолжит с этого места.")
 
 
 def cmd_table(args: argparse.Namespace) -> None:
     search = load_search(args.name)
     if write_table(search, search.load("seen.json")) is None:
-        print("В базе этого поиска пока нет объявлений: сначала scan.")
+        fail("в базе этого поиска пока нет объявлений: сначала scan")
+
+
+def cmd_telegram(args: argparse.Namespace) -> None:
+    try:
+        settings = telegram_notify.load_settings()
+        if args.action == "setup":
+            token = settings.get("token")
+            if not token or args.new_token:
+                print("Создайте бота у @BotFather в Telegram (команда /newbot) и вставьте его токен.")
+                token = getpass.getpass("Токен бота (ввод не отображается): ").strip()
+            if not token:
+                fail("токен не введён")
+            bot = telegram_notify.call(token, "getMe")
+            print(f"Бот: @{bot.get('username')}. Напишите ему /start в Telegram, затем нажмите Enter.")
+            input()
+            chat_id, chat_name = telegram_notify.find_chat_id(token)
+            telegram_notify.save_settings({"token": token, "chat_id": chat_id})
+            telegram_notify.Notifier(token, chat_id).send("✅ Авито-поиски подключены. Новые объявления будут приходить сюда.")
+            print(f"✓ Готово: сообщения пойдут в чат «{chat_name}». Настройки: {telegram_notify.SETTINGS_PATH}")
+            return
+        notifier = telegram_notify.Notifier.from_settings()
+        if notifier is None:
+            fail("Telegram не подключён: uv run python avito.py telegram setup")
+        notifier.send("🔔 Проверка: уведомления Авито-поисков работают.")
+        print("✓ Тестовое сообщение отправлено")
+    except telegram_notify.TelegramError as exc:
+        fail(str(exc))
 
 
 def main_cli(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description="Поиски на Авито: сбор, наблюдение, таблицы")
-    sub = parser.add_subparsers(dest="command", required=True)
+    global JSON_OUTPUT
+    parser = argparse.ArgumentParser(
+        prog="avito.py",
+        description="Поиски на Авито: добавить по ссылке, собрать, следить, таблицы, Telegram",
+    )
+    parser.add_argument("--json", action="store_true", help="вывод по строке JSON на событие (для скриптов и агентов)")
+    sub = parser.add_subparsers(dest="command", required=True, metavar="команда")
+
+    add = sub.add_parser("add", help="добавить поиск по ссылке с Авито")
+    add.add_argument("url", help="ссылка на страницу поиска Авито с выставленными фильтрами")
+    add.add_argument("--name", help="имя поиска (латиница); по умолчанию из ссылки")
+    add.add_argument("--profile", choices=sorted(profiles.PROFILES), help="тип обработки; по умолчанию по категории")
+    add.add_argument("--city", help="город по-русски, если не определился из ссылки")
+    add.add_argument("--watch-pages", type=int, default=2, help="сколько первых страниц смотреть в watch")
+    add.add_argument("--dry-run", action="store_true", help="только проверить ссылку, не сохранять")
+    add.add_argument("--replace", action="store_true", help="перезаписать поиск с тем же именем")
+    add.add_argument("--delay", type=float, default=5.0, help="секунд между запросами при проверке")
+    add.set_defaults(func=cmd_add)
+
     sub.add_parser("list", help="показать поиски").set_defaults(func=cmd_list)
+
     scan = sub.add_parser("scan", help="собрать все страницы поиска")
     scan.add_argument("name")
     scan.add_argument("--full", action="store_true", help="начать с первой страницы")
     scan.add_argument("--max-pages", type=int, default=MAX_PAGES)
     scan.add_argument("--delay", type=float, default=avito_client.DEFAULT_DELAY_SECONDS)
     scan.set_defaults(func=cmd_scan)
+
     watch = sub.add_parser("watch", help="следить за новыми объявлениями")
     watch.add_argument("names", nargs="+")
     watch.add_argument("--interval", type=float, default=180, help="секунд между циклами")
     watch.add_argument("--delay", type=float, default=avito_client.DEFAULT_DELAY_SECONDS)
+    watch.add_argument("--no-telegram", action="store_true", help="не отправлять в Telegram")
     watch.set_defaults(func=cmd_watch)
-    table = sub.add_parser("table", help="пересобрать таблицу из базы")
+
+    table = sub.add_parser("table", help="пересобрать таблицу Excel из базы")
     table.add_argument("name")
     table.set_defaults(func=cmd_table)
+
+    telegram = sub.add_parser("telegram", help="подключить Telegram или проверить его")
+    telegram.add_argument("action", choices=("setup", "test"))
+    telegram.add_argument("--new-token", action="store_true", help="ввести токен заново")
+    telegram.set_defaults(func=cmd_telegram)
+
     args = parser.parse_args(argv)
+    JSON_OUTPUT = args.json
     logging.basicConfig(level=logging.WARNING, format="%(asctime)s %(levelname)s %(message)s")
     args.func(args)
 

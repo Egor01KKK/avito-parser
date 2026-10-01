@@ -129,8 +129,8 @@ class CalmClient:
             self.log("IP-BLOCK", reason=kind, wait_min=IP_BLOCK_WAIT_SECONDS // 60)
             time.sleep(IP_BLOCK_WAIT_SECONDS)
 
-    def page(self, *, catalog_url: str, params: dict[str, str], number: int) -> Page:
-        """Fetch one catalog page, replacing the session after captchas."""
+    def get_json(self, url: str, *, catalog_url: str, context: str = "request") -> dict[str, Any]:
+        """GET a same-origin JSON endpoint, replacing the session after captchas."""
         for _ in range(MAX_SESSION_RESETS_PER_PAGE + 1):
             if self.session is None:
                 self._open_session(catalog_url)
@@ -138,19 +138,46 @@ class CalmClient:
             # from" changes, as when a person opens another search tab.
             self.referer = catalog_url
             try:
-                kind, response = self._get(items_url(params, number), document=False)
+                kind, response = self._get(url, document=False)
             except TRANSPORT_ERRORS as exc:
-                self.log("TRANSPORT", page=number, error=type(exc).__name__)
+                self.log("TRANSPORT", context=context, error=type(exc).__name__)
                 self.session = None
                 continue
             if kind == "ok":
-                stats = main.parse_items_page_stats(response)
-                return Page(
-                    number=number,
-                    items=main.parse_catalog_listings(response),
-                    total_count=stats.total_count if stats else 0,
-                    items_on_page=stats.items_on_page if stats else 0,
-                )
-            self.log("SESSION-RESET", reason=kind, page=number)
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise RuntimeError(f"{context}: answer is not a JSON object")
+                return payload
+            self.log("SESSION-RESET", reason=kind, context=context)
             self.session = None
-        raise RuntimeError(f"page {number}: no answer after {MAX_SESSION_RESETS_PER_PAGE} new sessions")
+        raise RuntimeError(f"{context}: no answer after {MAX_SESSION_RESETS_PER_PAGE} new sessions")
+
+    def page_payload(self, *, catalog_url: str, params: dict[str, str], number: int) -> dict[str, Any]:
+        """The full items answer: listings, counters, filters, category tree."""
+        return self.get_json(
+            items_url(params, number), catalog_url=catalog_url, context=f"page {number}"
+        )
+
+    def page(self, *, catalog_url: str, params: dict[str, str], number: int) -> Page:
+        """Fetch one catalog page of listings."""
+        payload = self.page_payload(catalog_url=catalog_url, params=params, number=number)
+        return page_from_payload(payload, number)
+
+
+def page_from_payload(payload: dict[str, Any], number: int) -> Page:
+    catalog = payload.get("catalog") if isinstance(payload.get("catalog"), dict) else {}
+    items = catalog.get("items") if isinstance(catalog.get("items"), list) else []
+
+    def counter(name: str) -> int:
+        value = payload.get(name)
+        return value if type(value) is int else 0
+
+    return Page(
+        number=number,
+        items=tuple(
+            item for item in items
+            if isinstance(item, dict) and item.get("type", "item") == "item"
+        ),
+        total_count=counter("totalCount"),
+        items_on_page=counter("itemsOnPage"),
+    )
