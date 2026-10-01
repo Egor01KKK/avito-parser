@@ -46,6 +46,10 @@ OUTPUT_DIR = BASE_DIR / "output"
 MAX_PAGES = 100
 HEARTBEAT_EVERY_CYCLES = 20
 MARKET_REFRESH_EVERY_CYCLES = 20
+# A listing alerts only if it entered the catalog this recently. Older ones
+# that surface on the first pages (paid promotion, reshuffles, the 1 500 cap)
+# are remembered silently.
+DEFAULT_FRESH_HOURS = 6.0
 
 load_json = apartments.load_seen
 save_json = apartments.save_json
@@ -54,6 +58,8 @@ JSON_OUTPUT = False
 
 def _alert_text(f: dict[str, Any]) -> str:
     head = f"🔔 [{f.get('search')}] {f.get('title')} — {f.get('price')}"
+    if f.get("listed_at"):
+        head += f" · в выдаче с {f['listed_at']}"
     if f.get("vs_market"):
         head += f" (рынок {f.get('market')}, {f['vs_market']})"
     lines = [head]
@@ -113,6 +119,8 @@ class Search:
     catalog_url: str
     params: dict[str, str]
     watch_pages: int = 2
+    fresh_hours: float = DEFAULT_FRESH_HOURS
+    alert_sellers: str = "private"
 
     @property
     def dir(self) -> Path:
@@ -149,6 +157,8 @@ def load_search(name: str) -> Search:
         catalog_url=config["catalog_url"],
         params={key: str(value) for key, value in config["params"].items()},
         watch_pages=int(config.get("watch_pages", 2)),
+        fresh_hours=float(config.get("fresh_hours", DEFAULT_FRESH_HOURS)),
+        alert_sellers=str(config.get("alert_sellers", "private")),
     )
 
 
@@ -161,6 +171,20 @@ def write_table(search: Search, seen_before: dict[str, str]) -> Path | None:
     counts = profile.write_table(path, seen_before)
     say("TABLE", search=search.name, path=str(path), **counts)
     return path
+
+
+def listed_since(item: dict[str, Any]) -> datetime | None:
+    """When the listing entered the catalog order (Avito's sortTimeStamp)."""
+    stamp = item.get("sortTimeStamp")
+    if isinstance(stamp, (int, float)) and stamp > 0:
+        return datetime.fromtimestamp(stamp / 1000)
+    return None
+
+
+def is_fresh(listed_at: datetime | None, hours: float, now: datetime | None = None) -> bool:
+    if listed_at is None:
+        return True  # nothing to judge by: better one extra alert than a lost one
+    return ((now or datetime.now()) - listed_at).total_seconds() <= hours * 3600
 
 
 def suggested_name(url: str) -> str:
@@ -296,7 +320,7 @@ def cmd_watch(args: argparse.Namespace) -> None:
             say("ERROR", search=search.name,
                 error="база пуста: сначала scan, иначе первые страницы целиком придут как «новые»")
         watched.append((search, base, search.load("seen.json"),
-                        profiles.PROFILES[search.profile](base, search.home_city)))
+                        profiles.PROFILES[search.profile](base, search.home_city, search.alert_sellers)))
         search.dir.mkdir(parents=True, exist_ok=True)
     say("WATCH", searches=[s.name for s in searches], interval_s=args.interval, telegram=notifier is not None)
     cycle = 0
@@ -316,10 +340,15 @@ def cmd_watch(args: argparse.Namespace) -> None:
                             seen[key] = stamp
                             base[key] = item
                             changed = True
+                            listed_at = listed_since(item)
+                            if not is_fresh(listed_at, search.fresh_hours):
+                                continue
                             fields = profile.alert(item)
                             if fields is None:
                                 continue
                             fields = {"search": search.name, **fields}
+                            if listed_at is not None:
+                                fields["listed_at"] = listed_at.strftime("%d.%m %H:%M")
                             with search.path("alerts.jsonl").open("a", encoding="utf-8") as handle:
                                 handle.write(json.dumps({"found": stamp, **fields}, ensure_ascii=False) + "\n")
                             say("ALERT", **fields)

@@ -130,7 +130,7 @@ def realty_message(search_title: str, alert: dict[str, Any]) -> str:
         f"🏠 <b>{esc(alert['title'])}</b>",
         f"💰 <b>{esc(alert['price'])}</b> · {esc(alert['price_per_m2'])}/м²",
         f"📍 {esc(alert['address'])}" + (f" · м. {esc(alert['metro'])}" if alert.get("metro") else ""),
-        f"🕒 {esc(alert['published'])} · {esc(alert['verdict'])}: {esc('; '.join(alert['reasons']))}",
+        f"🕒 {esc(alert.get('listed_at') or alert['published'])} · {esc(alert['verdict'])}: {esc('; '.join(alert['reasons']))}",
     ]
     if alert.get("notes"):
         lines.append("⚠️ " + esc("; ".join(alert["notes"])))
@@ -149,6 +149,8 @@ def goods_message(search_title: str, alert: dict[str, Any]) -> str:
         f"📱 <b>{esc(alert['title'])}</b>",
         f"💰 <b>{esc(alert['price'])}</b>{market}",
     ]
+    if alert.get("listed_at"):
+        lines.append(f"🕒 в выдаче с {esc(alert['listed_at'])}")
     if alert.get("avito_badge"):
         lines.append(f"🏷 Авито: {esc(alert['avito_badge'])}")
     seller = esc(alert["seller"])

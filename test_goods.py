@@ -95,3 +95,18 @@ def test_items_url_keeps_search_params_and_page():
     url = avito_client.items_url({"categoryId": "84", "q": "iphone 15"}, 3)
 
     assert "categoryId=84" in url and "q=iphone+15" in url and "p=3" in url
+
+
+def test_goods_alerts_only_private_people_by_default():
+    base = {str(i): phone(i, 36_000) for i in range(4)}
+    private = profiles.GoodsProfile(base, "sankt-peterburg")
+    everyone = profiles.GoodsProfile(base, "sankt-peterburg", alert_sellers="all")
+
+    company = phone(60, 36_000, seller="Компания")
+    shop = phone(61, 36_000, closed="8884 завершённых объявления")
+    person = phone(62, 36_000)
+
+    assert private.alert(company) is None
+    assert private.alert(shop) is None
+    assert private.alert(person) is not None
+    assert everyone.alert(company) is not None

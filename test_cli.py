@@ -50,3 +50,13 @@ def test_telegram_messages_escape_html_and_carry_link():
     }
     text = telegram_notify.message_for("realty-owner", "flats", realty_alert)
     assert "Черновик" in text and "12 000 000 ₽" in text
+
+
+def test_only_recently_listed_items_are_fresh():
+    from datetime import datetime, timedelta
+    now = datetime(2026, 10, 1, 17, 0)
+    assert avito.is_fresh(now - timedelta(hours=1), 6, now)
+    assert not avito.is_fresh(now - timedelta(days=10), 6, now)
+    assert avito.is_fresh(None, 6, now)
+    stamp = int((now - timedelta(hours=2)).timestamp() * 1000)
+    assert avito.listed_since({"sortTimeStamp": stamp}) == now - timedelta(hours=2)

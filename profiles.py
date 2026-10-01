@@ -84,7 +84,7 @@ def alert_fields(listing: apartments.Listing) -> dict[str, Any]:
 class RealtyOwnerProfile:
     name = "realty-owner"
 
-    def __init__(self, base: dict[str, Any], home_city: str = "") -> None:
+    def __init__(self, base: dict[str, Any], home_city: str = "", alert_sellers: str = "private") -> None:
         self.base = base
 
     def alert(self, item: dict[str, Any]) -> dict[str, Any] | None:
@@ -112,9 +112,10 @@ class RealtyOwnerProfile:
 class GoodsProfile:
     name = "goods"
 
-    def __init__(self, base: dict[str, Any], home_city: str = "") -> None:
+    def __init__(self, base: dict[str, Any], home_city: str = "", alert_sellers: str = "private") -> None:
         self.base = base
         self.home_city = home_city
+        self.alert_sellers = alert_sellers
         self.refresh_market()
 
     def refresh_market(self) -> None:
@@ -125,6 +126,13 @@ class GoodsProfile:
         # Listings from other cities come with delivery and flood the feed;
         # they stay in the table but do not alert.
         if self.home_city and offer.city and offer.city != self.home_city:
+            return None
+        # By default only private people: companies and "private" sellers
+        # with a shop-sized history stay in the table but do not alert.
+        if self.alert_sellers == "private" and (
+            offer.seller != "частное лицо"
+            or (offer.listing.closed_listings or 0) >= goods.SHOP_CLOSED_LISTINGS
+        ):
             return None
         goods.annotate([offer], self.stats, self.home_city)
         return goods.alert_fields(offer)
