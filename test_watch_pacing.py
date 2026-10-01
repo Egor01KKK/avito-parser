@@ -101,6 +101,13 @@ def test_after_a_full_scan_watch_reads_only_the_first_page(simulated):
     assert set(pages_of(requests)) == {"1"}
 
 
+def test_watch_asks_for_newest_first(simulated):
+    requests = simulated({"phones": 1}, interval=60)
+
+    sorts = {parse_qs(urlsplit(url).query).get("s", [None])[0] for _, url in requests}
+    assert sorts == {"104"}
+
+
 def test_two_watched_pages_read_page_one_and_two_each_cycle(simulated):
     requests = simulated({"phones": 2}, interval=180)
 

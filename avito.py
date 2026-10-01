@@ -53,6 +53,7 @@ DEFAULT_FRESH_HOURS = 6.0
 # After a full scan only the top of the catalog changes: new listings come
 # first, and 50 per page leave plenty of room for promoted ones.
 DEFAULT_WATCH_PAGES = 1
+DATE_SORT = {"s": "104"}
 # Seconds between watch cycles, chosen in the menu as "speed".
 WATCH_SPEEDS = (
     ("Быстро — раз в минуту (рекомендую)", 60),
@@ -137,6 +138,17 @@ class Search:
 
     def path(self, file: str) -> Path:
         return self.dir / file
+
+    @property
+    def request_params(self) -> dict[str, str]:
+        """Search parameters with the newest listings first.
+
+        Avito's default order puts paid promotion on top and scatters fresh
+        listings over the page; "по дате" (s=104) lists them newest first and
+        moves promotion to the end. Measured on page 1 on 2026-10-01: default
+        order had fresh (<6 h) listings at positions 25-50, s=104 at 1-9.
+        """
+        return {**self.params, **DATE_SORT}
 
     @property
     def home_city(self) -> str:
@@ -288,7 +300,7 @@ def cmd_scan(args: argparse.Namespace) -> None:
     number = start
     try:
         while number <= last_page:
-            page = client.page(catalog_url=search.catalog_url, params=search.params, number=number)
+            page = client.page(catalog_url=search.catalog_url, params=search.request_params, number=number)
             stamp = datetime.now().isoformat(timespec="seconds")
             new = 0
             for item in page.items:
@@ -340,7 +352,7 @@ def cmd_watch(args: argparse.Namespace) -> None:
                 try:
                     changed = False
                     for number in range(1, search.watch_pages + 1):
-                        page = client.page(catalog_url=search.catalog_url, params=search.params, number=number)
+                        page = client.page(catalog_url=search.catalog_url, params=search.request_params, number=number)
                         stamp = datetime.now().isoformat(timespec="seconds")
                         for item in page.items:
                             key = str(item["id"])

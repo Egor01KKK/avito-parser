@@ -60,3 +60,32 @@ def test_only_recently_listed_items_are_fresh():
     assert avito.is_fresh(None, 6, now)
     stamp = int((now - timedelta(hours=2)).timestamp() * 1000)
     assert avito.listed_since({"sortTimeStamp": stamp}) == now - timedelta(hours=2)
+
+
+def test_scan_also_walks_newest_first(tmp_path, monkeypatch):
+    import argparse
+    import avito_client
+
+    monkeypatch.setattr(avito, "SEARCHES_DIR", tmp_path / "searches")
+    monkeypatch.setattr(avito, "DATA_DIR", tmp_path / "data")
+    monkeypatch.setattr(avito, "OUTPUT_DIR", tmp_path / "out")
+    avito.SEARCHES_DIR.mkdir()
+    (avito.SEARCHES_DIR / "phones.json").write_text(json.dumps({
+        "title": "phones", "profile": "goods", "catalog_url": "https://www.avito.ru/kazan/telefony",
+        "params": {"categoryId": "84", "locationId": "650400", "s": "1"},
+    }), encoding="utf-8")
+    seen_params = []
+
+    class FakeClient:
+        def __init__(self, **kwargs):
+            pass
+
+        def page(self, *, catalog_url, params, number):
+            seen_params.append(params)
+            return avito_client.Page(number=number, items=(), total_count=0, items_on_page=0)
+
+    monkeypatch.setattr(avito.avito_client, "CalmClient", FakeClient)
+    avito.cmd_scan(argparse.Namespace(name="phones", full=True, max_pages=5, delay=0))
+
+    assert seen_params and all(params["s"] == "104" for params in seen_params)
+    assert seen_params[0]["categoryId"] == "84"
