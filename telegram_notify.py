@@ -13,6 +13,7 @@ from __future__ import annotations
 import html
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -21,6 +22,8 @@ from typing import Any
 SETTINGS_PATH = Path(__file__).resolve().parent / "data" / "telegram.json"
 API = "https://api.telegram.org/bot{token}/{method}"
 TIMEOUT_SECONDS = 15
+NETWORK_ATTEMPTS = 3
+RETRY_PAUSE_SECONDS = 3
 
 
 class TelegramError(RuntimeError):
@@ -48,6 +51,22 @@ def save_settings(settings: dict[str, Any], path: Path = SETTINGS_PATH) -> None:
 
 
 def call(token: str, method: str, payload: dict[str, Any] | None = None) -> Any:
+    """One Bot API call; a network hiccup is retried before giving up."""
+    for attempt in range(NETWORK_ATTEMPTS):
+        try:
+            return _call_once(token, method, payload)
+        except TelegramNetworkError:
+            if attempt == NETWORK_ATTEMPTS - 1:
+                raise
+            time.sleep(RETRY_PAUSE_SECONDS)
+    raise AssertionError("unreachable")
+
+
+class TelegramNetworkError(TelegramError):
+    pass
+
+
+def _call_once(token: str, method: str, payload: dict[str, Any] | None) -> Any:
     request = urllib.request.Request(
         API.format(token=token, method=method),
         data=json.dumps(payload or {}).encode("utf-8"),
@@ -63,7 +82,7 @@ def call(token: str, method: str, payload: dict[str, Any] | None = None) -> Any:
             description = None
         raise TelegramError(f"Telegram ответил {exc.code}: {description or exc.reason}") from None
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise TelegramError(f"нет связи с Telegram: {exc}") from None
+        raise TelegramNetworkError(f"нет связи с Telegram: {exc}") from None
     if not answer.get("ok"):
         raise TelegramError(f"Telegram: {answer.get('description')}")
     return answer.get("result")
