@@ -11,3 +11,5 @@ firewall-debug-responses/
 # Search results and the registry of seen listings (real ads, not for git)
 output/
 data/
+
+.DS_Store

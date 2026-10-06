@@ -291,6 +291,9 @@ def cmd_add(args: argparse.Namespace) -> None:
         print(f"    · {title}")
     for warning in resolved.warnings:
         print(f"  ⚠ {warning}")
+    if resolved.total == 0:
+        print("  ⚠ Сейчас по этому поиску 0 объявлений. Откройте ссылку в браузере: если там объявления есть,"
+              " пришлите ссылку разработчику — программа поняла её неправильно.")
     if not args.dry_run:
         print(f"\nДальше:\n  uv run python avito.py scan {name}\n  uv run python avito.py watch {name}")
 

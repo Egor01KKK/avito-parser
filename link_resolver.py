@@ -123,6 +123,7 @@ class ParsedLink:
     category_slug: str
     blob: str
     query: dict[str, str]
+    path_slugs: tuple[str, ...] = ()
 
 
 def parse_link(url: str) -> ParsedLink:
@@ -147,6 +148,7 @@ def parse_link(url: str) -> ParsedLink:
         category_slug=category_slug,
         blob=blob,
         query=query,
+        path_slugs=tuple(segment.split("-ASg")[0] for segment in segments[1:]),
     )
 
 
@@ -254,21 +256,49 @@ def filters_of(payload: dict[str, Any]) -> dict[str, Filter]:
     return found
 
 
-def filter_params(pairs: list[tuple[int, int]], filters: dict[str, Filter]) -> tuple[dict[str, str], list[str]]:
-    """API parameters for decoded pairs, plus warnings about unknown ones."""
+def value_by_slug(f: Filter, slugs: tuple[str, ...]) -> str | None:
+    """The filter value whose name is spelled in the link path, e.g. "512 ГБ" ~ 512_gb."""
+    for value, name in f.values.items():
+        if transliterate(name) in slugs:
+            return value
+    return None
+
+
+def filter_params(
+    pairs: list[tuple[int, int]],
+    filters: dict[str, Filter],
+    slugs: tuple[str, ...] = (),
+) -> tuple[dict[str, str], list[str]]:
+    """API parameters for decoded pairs, plus warnings about unknown ones.
+
+    A value is matched directly, then by its unique id among all filters,
+    then — when the link encodes a value id the API does not use (memory
+    "512 ГБ" is 757887 in a link and 757885 in the API) — by the value's
+    name spelled in the link path. A value that matches nothing in a filter
+    Avito does offer is left out with a warning: passed blindly it would make
+    the search return nothing.
+    """
     by_value = {value: f for f in filters.values() for value in f.values}
     chosen: dict[str, list[str]] = {}
     warnings = []
     for attribute, value in pairs:
         direct = filters.get(f"params[{attribute}]")
         if direct and (not direct.values or str(value) in direct.values):
-            target = direct
+            target, chosen_value = direct, str(value)
         elif str(value) in by_value:
-            target = by_value[str(value)]
+            target, chosen_value = by_value[str(value)], str(value)
+        elif direct and value_by_slug(direct, slugs):
+            target, chosen_value = direct, value_by_slug(direct, slugs)
+        elif direct:
+            warnings.append(
+                f"фильтр «{direct.title}» из ссылки не распознан и пропущен; "
+                f"доступные значения: {', '.join(direct.values.values())}"
+            )
+            continue
         else:
-            target = Filter(id=f"params[{attribute}]", title=f"params[{attribute}]", type="select")
+            target, chosen_value = Filter(id=f"params[{attribute}]", title=f"params[{attribute}]", type="select"), str(value)
             warnings.append(f"фильтр {attribute}={value} не найден среди фильтров категории; передаю как есть")
-        chosen.setdefault(target.id, []).append(str(value))
+        chosen.setdefault(target.id, []).append(chosen_value)
     params: dict[str, str] = {}
     for filter_id, values in chosen.items():
         kind = filters[filter_id].type if filter_id in filters else "select"
@@ -373,7 +403,7 @@ def resolve(
         extra: dict[str, str] = {}
         for _ in range(MAX_FILTER_ROUNDS):
             check = client.page_payload(catalog_url=referer, params={**params, **extra}, number=1)
-            mapped, warnings = filter_params(pairs, filters_of(check))
+            mapped, warnings = filter_params(pairs, filters_of(check), link.path_slugs)
             if mapped == extra:
                 break
             extra = mapped

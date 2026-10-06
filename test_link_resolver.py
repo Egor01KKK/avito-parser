@@ -83,3 +83,41 @@ def test_category_is_found_in_avito_category_tree():
     assert lr.category_from_tree(payload, "kazan", "telefony") == "84"
     assert lr.category_from_tree(payload, "kazan", "avtomobili") == "9"
     assert lr.category_from_tree(payload, "kazan", "noutbuki") is None
+
+
+def test_link_path_slugs_are_kept():
+    link = lr.parse_link(
+        "https://www.avito.ru/sankt-peterburg/telefony/mobilnye_telefony/apple/iphone_16_pro_max/"
+        "512_gb-ASgBAgICBESywA3MsYwVtMANzqs5sMENiPw35uAN~sFc?cd=1&localPriority=1"
+    )
+    assert link.path_slugs == ("telefony", "mobilnye_telefony", "apple", "iphone_16_pro_max", "512_gb")
+    assert (112691, 757887) in lr.decode_filter_blob(link.blob)
+
+
+def test_value_id_from_link_is_matched_by_its_name_in_the_path():
+    """The link says 757887 for "512 ГБ"; the API offers 757885 under that name."""
+    filters = {
+        "params[112691]": lr.Filter("params[112691]", "Память", "multiselect",
+                                    {"757884": "256 ГБ", "757885": "512 ГБ", "3254573": "1 ТБ"}),
+    }
+
+    params, warnings = lr.filter_params([(112691, 757887)], filters, ("apple", "iphone_16_pro_max", "512_gb"))
+
+    assert params == {"params[112691][0]": "757885"}
+    assert warnings == []
+
+
+def test_unrecognised_value_of_a_known_filter_is_left_out_not_sent_blindly():
+    filters = {
+        "params[112691]": lr.Filter("params[112691]", "Память", "multiselect", {"757884": "256 ГБ"}),
+    }
+
+    params, warnings = lr.filter_params([(112691, 757887)], filters, ("apple",))
+
+    assert params == {}
+    assert warnings and "Память" in warnings[0]
+
+
+def test_memory_names_transliterate_like_link_slugs():
+    assert lr.transliterate("512 ГБ") == "512_gb"
+    assert lr.transliterate("1 ТБ") == "1_tb"
