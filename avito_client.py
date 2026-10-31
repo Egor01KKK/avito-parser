@@ -18,6 +18,7 @@ from urllib.parse import urlencode
 from curl_cffi.requests.exceptions import (
     ConnectionError as CurlConnectionError,
     IncompleteRead,
+    RequestException as CurlRequestError,
     Timeout as CurlTimeout,
 )
 
@@ -29,7 +30,9 @@ MAX_POW_IN_A_ROW = 3
 MAX_SESSION_RESETS_PER_PAGE = 3
 FULL_PAGE_SIZE = 50
 
-TRANSPORT_ERRORS = (IncompleteRead, CurlConnectionError, CurlTimeout)
+# RequestException also covers curl errors that have no subclass, e.g. a DNS
+# lookup timing out (curl 28 "Resolving timed out").
+TRANSPORT_ERRORS = (IncompleteRead, CurlConnectionError, CurlTimeout, CurlRequestError)
 
 
 @dataclass(frozen=True)
